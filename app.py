@@ -1,10 +1,11 @@
-import argparse
 import io
 import logging
+import base64
 from flask import Flask, request, jsonify
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import torch
-from draw_box import draw_boxes_for_dailyCHUP , draw_boxes_for_inspection
+import json
+from draw_box import draw_boxes_for_dailyCHUP, draw_boxes_for_inspection
 
 app = Flask(__name__)
 models = {}
@@ -14,11 +15,18 @@ model_path = "best.pt"  # Path to your custom model file
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@app.route("/v1/inspection/<model>", methods=["POST"])
-def predict_inspection(model):
+# Load the model directly
+try:
+    models["best"] = torch.hub.load("ultralytics/yolov5", 'custom', path=model_path, force_reload=True, skip_validation=True)
+    logger.info(f"Model 'best' loaded successfully")
+except Exception as e:
+    logger.error(f"Error loading model 'best': {e}")
+
+@app.route("/v1/inspection/best", methods=["POST"])
+def predict_inspection():
     if request.method != "POST":
         return jsonify({"error": "Only POST method is allowed"}), 405
-    
+
     if "image" not in request.files:
         return jsonify({"error": "No image file found in the request"}), 400
 
@@ -26,35 +34,47 @@ def predict_inspection(model):
         im_file = request.files["image"]
         im_bytes = im_file.read()
         im = Image.open(io.BytesIO(im_bytes))
-        im = im.resize((640, 640))
+        
+        # Resize the image to 80% of its original dimensions
+        width, height = im.size
+        new_width = int(width * 0.95)
+        new_height = int(height * 0.95)
+        im = im.resize((new_width, new_height), Image.LANCZOS)
     except Exception as e:
         logger.error(f"Error processing image: {e}")
         return jsonify({"error": "Failed to process the image"}), 400
 
-    if model not in models:
-        return jsonify({"error": f"Model '{model}' not found"}), 404
-
     try:
-        results = models[model](im, size=640)  # Adjust size as needed for faster inference
+        results = models["best"](im)  # Adjust size as needed
         detections = results.pandas().xyxy[0].to_dict(orient="records")
-        # Draw bounding boxes and labels on the image
+
+        # Prepare prediction JSON
+        prediction_json = json.dumps(detections)
+
+        # Draw bounding boxes on a copy of the image
         im_with_boxes = draw_boxes_for_inspection(im.copy(), detections)
-        # Resize the image to reduce its size
-        im_with_boxes.thumbnail((1000, 1000))  # Adjust the size as needed
+
         # Convert the annotated image to bytes
         img_byte_array = io.BytesIO()
-        im_with_boxes.save(img_byte_array, format='PNG')
-        img_byte_array = img_byte_array.getvalue()
-        return img_byte_array, 200, {'Content-Type': 'image/png'}
+        im_with_boxes.save(img_byte_array, format='JPEG', quality=95)
+        img_byte_array.seek(0)
+        img_base64 = base64.b64encode(img_byte_array.getvalue()).decode('utf-8')
+
+        # Create a single JSON response
+        response = {
+            "message": "Prediction successful",
+            "prediction": json.loads(prediction_json),  # Convert prediction back to dict
+            "image": f"data:image/png;base64,{img_base64}"
+        }
+
+        return jsonify(response)
+
     except Exception as e:
         logger.error(f"Error making prediction: {e}")
         return jsonify({"error": "Failed to make prediction"}), 500
 
-## for the daily checking up page
-
-
-@app.route("/v1/dailycheckup/<model>", methods=["POST"])
-def predict_daily_checkup(model):
+@app.route("/v1/dailycheckup/best", methods=["POST"])
+def predict_daily_checkup():
     if request.method != "POST":
         return jsonify({"error": "Only POST method is allowed"}), 405
     
@@ -65,40 +85,32 @@ def predict_daily_checkup(model):
         im_file = request.files["image"]
         im_bytes = im_file.read()
         im = Image.open(io.BytesIO(im_bytes))
+        
+        # Resize the image to 80% of its original dimensions
+        width, height = im.size
+        new_width = int(width * 0.9)
+        new_height = int(height * 0.9)
+        im = im.resize((new_width, new_height), Image.LANCZOS)
     except Exception as e:
         logger.error(f"Error processing image: {e}")
         return jsonify({"error": "Failed to process the image"}), 400
 
-    if model not in models:
-        return jsonify({"error": f"Model '{model}' not found"}), 404
-
     try:
-        results = models[model](im, size=640)  # Adjust size as needed for faster inference
+        results = models["best"](im)  # Adjust size as needed for faster inference
         detections = results.pandas().xyxy[0].to_dict(orient="records")
+        
         # Draw bounding boxes and labels on the image
         im_with_boxes = draw_boxes_for_dailyCHUP(im.copy(), detections)
-        # Resize the image to reduce its size
-        im_with_boxes.thumbnail((1000, 1000))  # Adjust the size as needed
+        
         # Convert the annotated image to bytes
         img_byte_array = io.BytesIO()
-        im_with_boxes.save(img_byte_array, format='PNG')
-        img_byte_array = img_byte_array.getvalue()
-        return img_byte_array, 200, {'Content-Type': 'image/png'}
+        im_with_boxes.save(img_byte_array, format='JPEG', quality=95)
+        img_byte_array.seek(0)
+        
+        return img_byte_array.getvalue(), 200, {'Content-Type': 'image/png'}
     except Exception as e:
         logger.error(f"Error making prediction: {e}")
         return jsonify({"error": "Failed to make prediction"}), 500        
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Flask API exposing YOLOv5 model")
-    parser.add_argument("--port", default=5000, type=int, help="port number")
-    parser.add_argument("--model", nargs="+", default=["best"], help="model(s) to run, i.e. --model best")
-    opt = parser.parse_args()
-
-    for m in opt.model:
-        try:
-            models[m] = torch.hub.load("ultralytics/yolov5", 'custom', path=model_path, force_reload=False, skip_validation=True)
-            logger.info(f"Model '{m}' loaded successfully")
-        except Exception as e:
-            logger.error(f"Error loading model '{m}': {e}")
-
-    app.run(host="0.0.0.0", port=opt.port)
+    app.run(host="0.0.0.0", port=5000)
