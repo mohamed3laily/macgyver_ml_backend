@@ -10,7 +10,7 @@ def draw_boxes_for_inspection(image, detections):
         class_name = detection["name"]
         confidence = detection["confidence"]
         
-        text = f"{class_name}: {confidence:.2f}"
+        text = f"{class_name}"
         estimated_text_height = font_size + additional_offset
         estimated_text_width = font_size * len(text) // 2  
         text_position = (xmin, ymin - estimated_text_height if ymin - estimated_text_height > 0 else ymin)
