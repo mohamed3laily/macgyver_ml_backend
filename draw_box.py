@@ -1,7 +1,7 @@
 from PIL import Image, ImageDraw, ImageFont
 def draw_boxes_for_inspection(image, detections):
     draw = ImageDraw.Draw(image)
-    font_size = 100
+    font_size = 115
     font = ImageFont.truetype("arial.ttf", size=font_size)
     additional_offset = 10  
     
